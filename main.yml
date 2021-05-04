@@ -1,0 +1,68 @@
+---
+# Main task file for the nginx-config role. This role is intended to configure my primary reverse proxy host.
+
+- name: Deploy Nginx.
+  hosts: main_proxy
+  become: true
+  roles:
+  - { role: nginx-config, sites: "{{ proxy01_backend }}" }
+
+# As this isn't strictly nginx configuration, I've decided to split this from the nginx role. It still uses those variables though.
+- name: Set DNS Records. 
+  hosts: main_proxy
+  become: true
+  vars_files:
+    - roles/nginx-config/vars/vault
+    - roles/nginx-config/vars/main.yml
+  vars:
+    - sites: "{{ proxy01_backend }}"
+  tasks:
+    - name: Add the local DNS record.
+      win_dns_record:
+        name: "{{ item.value.server_name }}"
+        type: "A"
+        value: "{{ ansible_default_ipv4.address }}"
+        zone: "{{ dns_zone }}"
+        state: present
+      with_dict: "{{ sites }}"
+      delegate_to: dc01
+      become_user: "{{ dns_admin_user }}"
+
+- name: Deploy certificates using LetsEncrypt.
+  hosts: main_proxy
+  become: true
+  vars_files:
+    - roles/nginx-config/vars/main.yml
+  roles:
+    - { role: galaxy_roles/geerlingguy.certbot, sites: "{{ proxy01_backend }}" }
+
+- name: Configure Nginx to use LetsEncrypt Certificates.
+  hosts: main_proxy
+  become: true
+  vars_files: roles/nginx-config/vars/main.yml
+  vars:
+    - sites: "{{ proxy01_backend }}"
+  tasks:
+    - name: Import the https_conf.yml tasks.
+      include_role:
+        name: nginx-config
+        tasks_from: https_conf.yml
+      with_dict: "{{ sites }}"
+      loop_control:
+        loop_var: site_item
+  
+- name: Configure Organizr integration and authentication if enabled.
+  hosts: main_proxy
+  become: true
+  vars_files: roles/nginx-config/vars/main.yml
+  vars:
+    - sites: "{{ proxy01_backend }}"
+  tasks:
+    - name: Import the organizr_conf.yml tasks.
+      include_role:
+        name: nginx-config
+        tasks_from: organizr_conf.yml
+      with_dict: "{{ sites }}"
+      loop_control:
+        loop_var: site_item
+      when: use_organizr_authentication

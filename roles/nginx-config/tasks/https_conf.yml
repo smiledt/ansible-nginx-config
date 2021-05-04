@@ -1,0 +1,63 @@
+---
+# Secondary tasks file for nginx role, to be run after LetsEncrypt certs have been issued.
+
+- name: First, check to see if the cert file exists. 
+  stat:
+    path: /etc/letsencrypt/live/{{ site_item.value.server_fqdn }}/cert.pem
+  register: letsencrypt_cert
+
+- debug:
+    var: letsencrypt_cert
+
+- name: Uncomment HTTPS 443 server block.
+  replace:
+    path: /etc/nginx/sites-available/{{ site_item.key }}
+    regexp: '^#(.*)'  # This should match to anything starting with #
+    replace: '\1'
+    after: '# Https server block'
+    before: '# Http server block'
+  when: letsencrypt_cert.stat.exists
+  notify: Restart nginx
+
+- name: Add 301 rule to redirect to https. 
+  blockinfile:
+    path: /etc/nginx/sites-available/{{ site_item.key }}
+    insertafter: '^\s*listen \[::\]:80.*;'
+    state: present
+    block: |4
+            if ($host = {{ site_item.value.server_fqdn }}) {
+              return 301 https://$host$request_uri; }
+  when: letsencrypt_cert.stat.exists      
+  notify: Restart nginx
+
+- name: Restrict private sites to the LAN.
+  lineinfile: 
+    path: /etc/nginx/sites-available/{{ site_item.key }}
+    insertafter: '^\s*location \/ {.*'
+    firstmatch: yes
+    state: present
+    line: "include /etc/nginx/private-sites.conf;"
+  when: not site_item.value.public and letsencrypt_cert.stat.exists
+  notify: Restart nginx
+
+# Organizr authentication
+# - name: Add auth string to location block.
+#   lineinfile:
+#     path: /etc/nginx/sites-available/{{ item.key }}
+#     insertafter: '^\s*location \/ {.*'
+#     state: present
+#     firstmatch: yes
+#     line: "include /etc/nginx/organizr-auth.conf;"
+#   when: item.value.org_auth is defined and use_organizr_authentication
+#   with_dict: "{{ sites }}"
+#   notify: Restart nginx
+
+- name: Add other specialized lines into the nginx config file
+  lineinfile:
+    path: /etc/nginx/sites-available/{{ site_item.key }}
+    state: present
+    insertbefore: '^.*{{ item.insert_before }}'
+    line: "{{ item.spec_line }}"
+  with_items: "{{ site_item.value.specializations }}" 
+  when: site_item.value.specializations is defined and letsencrypt_cert.stat.exists
+  notify: Restart nginx
